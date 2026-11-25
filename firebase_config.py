@@ -2,60 +2,77 @@ import os
 import json
 from pathlib import Path
 from functools import lru_cache
+from threading import RLock
 
 from dotenv import load_dotenv
 import firebase_admin
 from firebase_admin import credentials, firestore
 
 
+# ==========================================
+# ENVIRONMENT CONFIGURATION
+# ==========================================
+
 BASE = Path(__file__).resolve().parent
 
 load_dotenv(BASE / ".env")
 
+_lock = RLock()
+
+
+# ==========================================
+# FIREBASE FIRESTORE CONNECTION
+# ==========================================
 
 @lru_cache(maxsize=1)
 def get_db():
 
-    try:
-        firebase_app = firebase_admin.get_app()
+    with _lock:
 
-    except ValueError:
+        try:
+            firebase_app = firebase_admin.get_app()
 
-        # VERCEL FIREBASE CONNECTION
-        firebase_json = os.getenv(
-            "FIREBASE_SERVICE_ACCOUNT"
-        )
+        except ValueError:
 
-        if firebase_json:
+            # VERCEL CONNECTION
+            firebase_json = os.getenv(
+                "FIREBASE_SERVICE_ACCOUNT", ""
+            ).strip()
 
-            service_account = json.loads(firebase_json)
+            if firebase_json:
 
-            cred = credentials.Certificate(
-                service_account
-            )
-
-        # LOCAL PYCHARM CONNECTION
-        else:
-
-            credential_path = os.getenv(
-                "GOOGLE_APPLICATION_CREDENTIALS",
-                "ServiceAccountKey.json"
-            )
-
-            path = Path(credential_path)
-
-            if not path.is_absolute():
-                path = BASE / path
-
-            if not path.is_file():
-                raise FileNotFoundError(
-                    f"Firebase credentials not found: {path}"
+                service_account = json.loads(
+                    firebase_json
                 )
 
-            cred = credentials.Certificate(str(path))
+                cred = credentials.Certificate(
+                    service_account
+                )
 
-        firebase_app = firebase_admin.initialize_app(
-            cred
-        )
+            # LOCAL PYCHARM CONNECTION
+            else:
 
-    return firestore.client(app=firebase_app)
+                credential_path = os.getenv(
+                    "GOOGLE_APPLICATION_CREDENTIALS",
+                    "ServiceAccountKey.json"
+                )
+
+                path = Path(credential_path)
+
+                if not path.is_absolute():
+                    path = BASE / path
+
+                if not path.is_file():
+                    raise FileNotFoundError(
+                        f"Firebase credentials not found: {path}"
+                    )
+
+                cred = credentials.Certificate(
+                    str(path)
+                )
+
+            firebase_app = firebase_admin.initialize_app(
+                cred
+            )
+
+        return firestore.client(app=firebase_app)
