@@ -1,7 +1,7 @@
 import os
 import json
+import logging
 from pathlib import Path
-from functools import lru_cache
 from threading import RLock
 
 from dotenv import load_dotenv
@@ -9,70 +9,81 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 
 
-# ==========================================
-# ENVIRONMENT CONFIGURATION
-# ==========================================
-
 BASE = Path(__file__).resolve().parent
-
 load_dotenv(BASE / ".env")
 
+_db = None
 _lock = RLock()
 
 
-# ==========================================
-# FIREBASE FIRESTORE CONNECTION
-# ==========================================
-
-@lru_cache(maxsize=1)
 def get_db():
+
+    global _db
 
     with _lock:
 
+        if _db is not None:
+            return _db
+
         try:
-            firebase_app = firebase_admin.get_app()
 
-        except ValueError:
+            try:
+                firebase_app = firebase_admin.get_app()
 
-            # VERCEL CONNECTION
-            firebase_json = os.getenv(
-                "FIREBASE_SERVICE_ACCOUNT", ""
-            ).strip()
+            except ValueError:
 
-            if firebase_json:
+                firebase_json = os.getenv(
+                    "FIREBASE_SERVICE_ACCOUNT", ""
+                ).strip()
 
-                service_account = json.loads(
-                    firebase_json
-                )
+                if firebase_json:
 
-                cred = credentials.Certificate(
-                    service_account
-                )
-
-            # LOCAL PYCHARM CONNECTION
-            else:
-
-                credential_path = os.getenv(
-                    "GOOGLE_APPLICATION_CREDENTIALS",
-                    "ServiceAccountKey.json"
-                )
-
-                path = Path(credential_path)
-
-                if not path.is_absolute():
-                    path = BASE / path
-
-                if not path.is_file():
-                    raise FileNotFoundError(
-                        f"Firebase credentials not found: {path}"
+                    service_account = json.loads(
+                        firebase_json
                     )
 
-                cred = credentials.Certificate(
-                    str(path)
+                    cred = credentials.Certificate(
+                        service_account
+                    )
+
+                else:
+
+                    credential_path = os.getenv(
+                        "GOOGLE_APPLICATION_CREDENTIALS",
+                        "ServiceAccountKey.json"
+                    )
+
+                    path = Path(credential_path)
+
+                    if not path.is_absolute():
+                        path = BASE / path
+
+                    if not path.is_file():
+                        raise FileNotFoundError(
+                            "Firebase service account file not found."
+                        )
+
+                    cred = credentials.Certificate(
+                        str(path)
+                    )
+
+                firebase_app = firebase_admin.initialize_app(
+                    cred
                 )
 
-            firebase_app = firebase_admin.initialize_app(
-                cred
+            _db = firestore.client(app=firebase_app)
+
+            logging.info(
+                "Firebase client initialized: %s",
+                _db.project
             )
 
-        return firestore.client(app=firebase_app)
+            return _db
+
+        except Exception:
+
+            logging.exception(
+                "Firebase initialization failed"
+            )
+
+            raise
