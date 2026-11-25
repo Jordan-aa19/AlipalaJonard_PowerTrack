@@ -2,13 +2,27 @@ import os
 import re
 import math
 
+from pathlib import Path
 from datetime import date, datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
+
 from flask import Flask, jsonify, request, render_template
 from google.cloud import firestore
 from firebase_config import get_db
 
-app = Flask(__name__)
+
+# =====================================================
+# FLASK CONFIGURATION - PYCHARM AND VERCEL
+# =====================================================
+
+BASE_DIR = Path(__file__).resolve().parent
+
+app = Flask(
+    __name__,
+    template_folder=str(BASE_DIR / "templates"),
+    static_folder=str(BASE_DIR / "static"),
+    static_url_path="/static"
+)
 
 COLS = ("consumers", "meter_readings", "bills")
 
@@ -52,7 +66,9 @@ def number(d, k):
         return v
 
     except (ValueError, TypeError, KeyError):
-        raise Invalid(f"{k} must be a valid nonnegative number")
+        raise Invalid(
+            f"{k} must be a valid nonnegative number"
+        )
 
 
 def day(d, k):
@@ -123,6 +139,22 @@ def record(s):
 
 @app.get("/")
 def home():
+
+    template = BASE_DIR / "templates" / "index.html"
+
+    if not template.is_file():
+
+        app.logger.error(
+            "Missing HTML template: %s",
+            template
+        )
+
+        return (
+            "PowerTrack template is missing. "
+            "Check templates/index.html in the deployment.",
+            500
+        )
+
     return render_template("index.html")
 
 
@@ -133,14 +165,46 @@ def home():
 @app.get("/api/health")
 def health():
 
+    db = get_db()
+
     list(
-        get_db()
-        .collection("consumers")
+        db.collection("consumers")
         .limit(1)
         .stream()
     )
 
-    return jsonify(ok=True)
+    return jsonify(
+        ok=True,
+        database="Firebase Cloud Firestore",
+        message="Successfully connected to Firestore"
+    )
+
+
+# =====================================================
+# FRONTEND FILE CHECK
+# =====================================================
+
+@app.get("/api/frontend-health")
+def frontend_health():
+
+    files = {
+        "html": (
+            BASE_DIR / "templates" / "index.html"
+        ).is_file(),
+
+        "css": (
+            BASE_DIR / "static" / "css" / "style.css"
+        ).is_file(),
+
+        "javascript": (
+            BASE_DIR / "static" / "js" / "app.js"
+        ).is_file()
+    }
+
+    return jsonify(
+        ok=all(files.values()),
+        files=files
+    )
 
 
 # =====================================================
@@ -170,12 +234,12 @@ def error(e):
     if isinstance(e, HTTPException):
         return jsonify(error=e.description), e.code
 
-    app.logger.exception("Database operation failed")
+    app.logger.exception("PowerTrack application error")
 
     return jsonify(
         error=(
-            "Database operation failed. "
-            "Check terminal and Firestore configuration."
+            "Application operation failed. "
+            "Check the server logs."
         )
     ), 500
 
@@ -197,8 +261,10 @@ def mutate(col, ident, data, method):
     @firestore.transactional
     def work(tx):
 
-        # Transaction coordination
-        lock = db.collection("_system").document("write_lock")
+        lock = db.collection("_system").document(
+            "write_lock"
+        )
+
         lock.get(transaction=tx)
 
         old = ref.get(transaction=tx)
@@ -233,7 +299,9 @@ def mutate(col, ident, data, method):
             )
 
             if not r:
-                raise Invalid(f"Invalid {c} reference")
+                raise Invalid(
+                    f"Invalid {c} reference"
+                )
 
             return r
 
@@ -300,7 +368,9 @@ def mutate(col, ident, data, method):
                     r"[+\d][\d -]{6,19}",
                     d["contact_number"]
                 ):
-                    raise Invalid("Invalid phone number")
+                    raise Invalid(
+                        "Invalid phone number"
+                    )
 
                 d["consumer_type"] = choice(
                     data,
@@ -325,10 +395,13 @@ def mutate(col, ident, data, method):
 
                     if any(
                         r["id"] != ref.id
-                        and r[k].casefold() == d[k].casefold()
+                        and r[k].casefold()
+                        == d[k].casefold()
                         for r in rows[col]
                     ):
-                        raise Conflict(f"Duplicate {k}")
+                        raise Conflict(
+                            f"Duplicate {k}"
+                        )
 
             # =========================================
             # METER READING MANAGEMENT
@@ -336,7 +409,10 @@ def mutate(col, ident, data, method):
 
             elif col == "meter_readings":
 
-                cid = text(data, "consumer_id")
+                cid = text(
+                    data,
+                    "consumer_id"
+                )
 
                 lookup("consumers", cid)
 
@@ -346,12 +422,24 @@ def mutate(col, ident, data, method):
                     ref.id
                 ):
                     raise Conflict(
-                        "Delete linked bill before editing reading"
+                        "Delete linked bill before "
+                        "editing reading"
                     )
 
-                p = number(data, "previous_reading")
-                c = number(data, "current_reading")
-                dt = day(data, "reading_date")
+                p = number(
+                    data,
+                    "previous_reading"
+                )
+
+                c = number(
+                    data,
+                    "current_reading"
+                )
+
+                dt = day(
+                    data,
+                    "reading_date"
+                )
 
                 if c < p:
                     raise Invalid(
@@ -361,13 +449,19 @@ def mutate(col, ident, data, method):
 
                 d = dict(
                     consumer_id=cid,
+
                     previous_reading=p,
+
                     current_reading=c,
+
                     consumption_kwh=float(
                         dec(c) - dec(p)
                     ),
+
                     reading_date=dt,
+
                     billing_month=dt[:7],
+
                     rate_per_kwh=number(
                         data,
                         "rate_per_kwh"
@@ -390,7 +484,10 @@ def mutate(col, ident, data, method):
 
             else:
 
-                rid = text(data, "reading_id")
+                rid = text(
+                    data,
+                    "reading_id"
+                )
 
                 r = lookup(
                     "meter_readings",
@@ -419,6 +516,7 @@ def mutate(col, ident, data, method):
                         or (
                             b["consumer_id"]
                             == r["consumer_id"]
+
                             and b["billing_month"]
                             == r["billing_month"]
                         )
@@ -432,7 +530,11 @@ def mutate(col, ident, data, method):
                 status = choice(
                     data,
                     "payment_status",
-                    ["Paid", "Unpaid", "Overdue"]
+                    [
+                        "Paid",
+                        "Unpaid",
+                        "Overdue"
+                    ]
                 )
 
                 paid = (
@@ -460,6 +562,7 @@ def mutate(col, ident, data, method):
                 }
 
                 d.update(
+
                     reading_id=rid,
 
                     additional_charge=fee,
@@ -483,11 +586,15 @@ def mutate(col, ident, data, method):
             # SAVE TO FIRESTORE
             # =========================================
 
-            d["updated_at"] = firestore.SERVER_TIMESTAMP
+            d["updated_at"] = (
+                firestore.SERVER_TIMESTAMP
+            )
 
             if method == "POST":
 
-                d["created_at"] = firestore.SERVER_TIMESTAMP
+                d["created_at"] = (
+                    firestore.SERVER_TIMESTAMP
+                )
 
                 tx.create(ref, d)
 
@@ -539,7 +646,6 @@ def api(col, ident=None):
 
         c = get_db().collection(col)
 
-        # View single record
         if ident:
 
             s = c.document(ident).get()
@@ -549,7 +655,6 @@ def api(col, ident=None):
 
             return jsonify(record(s))
 
-        # Search and filter
         q = request.args.get(
             "q", ""
         ).casefold()
@@ -600,7 +705,7 @@ def api(col, ident=None):
 
 # =====================================================
 # POWERTRACK - CRIMSON CIRCUIT
-# FLASK SERVER CONFIGURATION
+# LOCAL FLASK SERVER
 # =====================================================
 
 if __name__ == "__main__":
